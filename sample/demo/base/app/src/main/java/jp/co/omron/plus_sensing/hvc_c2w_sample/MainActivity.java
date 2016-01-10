@@ -4,6 +4,8 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.media.AudioFormat;
 import android.media.AudioManager;
 import android.media.AudioTrack;
@@ -11,6 +13,7 @@ import android.net.wifi.ScanResult;
 import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
 import android.os.AsyncTask;
+import android.os.Build;
 import android.os.Handler;
 import android.support.v7.app.AppCompatActivity;
 import android.os.Bundle;
@@ -24,6 +27,7 @@ import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
+import android.widget.ImageView;
 import android.widget.ScrollView;
 import android.widget.Spinner;
 import android.widget.TextView;
@@ -349,6 +353,23 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onClick(View v) {
                 deleteAlbum();
+            }
+        });
+
+        // Image
+        btn = (Button)findViewById(R.id.button11);
+        btn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                getLastOkaoImage();
+            }
+        });
+
+        ImageView imageView = (ImageView)findViewById(R.id.imageView);
+        imageView.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                v.setVisibility(View.INVISIBLE);
             }
         });
     }
@@ -864,6 +885,66 @@ public class MainActivity extends AppCompatActivity {
                 });
             }
         }).start();
+    }
+
+    private void getLastOkaoImage() {
+        addLog("getLastOkaoImage ->");
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                Int imageBufSize = new Int();
+                Int returnStatus = new Int();
+                // 最新の OKAO 実行時の画像サイズを取得
+                int ret = api.getLastOkaoImageSize(imageBufSize, returnStatus);
+                final String msg1 = String.format("errorCode=%d,imageBufSize=%d,returnStatus=%#x",
+                        ret,
+                        imageBufSize.getIntValue(),
+                        returnStatus.getIntValue());
+                handler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        addLog(msg1);
+                    }
+                });
+
+                if (ret != ErrorCodes.HVCW_SUCCESS) return;
+
+                byte[] image = new byte[imageBufSize.getIntValue()];
+                // 最新の OKAO 実行時の画像取得
+                ret = api.getLastOkaoImage(imageBufSize.getIntValue(), image, returnStatus);
+                final String msg2 = String.format("errorCode=%d,returnStatus=%#x",
+                        ret,
+                        returnStatus.getIntValue());
+                handler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        addLog(msg2);
+                    }
+                });
+
+                if (ret != ErrorCodes.HVCW_SUCCESS) return;
+                BitmapFactory.Options options = new BitmapFactory.Options();
+                options.inPreferredConfig = Bitmap.Config.ARGB_4444;
+                if(Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
+                    //noinspection deprecation
+                    options.inPurgeable = true;
+                }
+                final Bitmap bitmap = BitmapFactory.decodeByteArray(image, 0, image.length, options);
+
+                handler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        showImage(bitmap);
+                    }
+                });
+            }
+        }).start();
+    }
+
+    private void showImage(Bitmap bitmap){
+        ImageView imageView = (ImageView)findViewById(R.id.imageView);
+        imageView.setImageBitmap(bitmap);
+        imageView.setVisibility(View.VISIBLE);
     }
 
     /**
