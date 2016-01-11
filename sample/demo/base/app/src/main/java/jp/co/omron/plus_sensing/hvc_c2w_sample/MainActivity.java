@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.graphics.Bitmap;
 import android.media.AudioFormat;
 import android.media.AudioManager;
 import android.media.AudioTrack;
@@ -11,7 +12,6 @@ import android.net.wifi.ScanResult;
 import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
 import android.os.AsyncTask;
-import android.os.Handler;
 import android.support.v7.app.AppCompatActivity;
 import android.os.Bundle;
 import android.text.InputType;
@@ -45,9 +45,8 @@ import java.util.List;
 
 import javax.net.ssl.HttpsURLConnection;
 
-import jp.co.omron.hvcw.ErrorCodes;
 import jp.co.omron.hvcw.FileInfo;
-import jp.co.omron.hvcw.HvcwApi;
+import jp.co.omron.hvcw.HvcwApiWrapper;
 import jp.co.omron.hvcw.Int;
 import jp.co.omron.hvcw.OkaoResult;
 import jp.co.omron.hvcw.ResultAeg;
@@ -77,8 +76,7 @@ public class MainActivity extends AppCompatActivity {
     /** カメラに接続済みかどうかのフラグ */
     private boolean isConnected = false;
 
-    /** HVC SDK ハンドル */
-    private static HvcwApi api;
+    private HvcwApiWrapper wrapper;
 
     // パスワードマスク切り替え用
     private EditText et1;
@@ -91,45 +89,17 @@ public class MainActivity extends AppCompatActivity {
     /** Wifi APスキャン用 */
     private BroadcastReceiver receiver;
 
-    /** UIスレッド操作用 */
-    private Handler handler = new Handler();
-
-    // ライブラリのロード
-    static {
-        System.loadLibrary("openh264");
-        System.loadLibrary("ffmpeg");
-        System.loadLibrary("ldpc");
-        System.loadLibrary("IOTCAPIs");
-        System.loadLibrary("RDTAPIs");
-        System.loadLibrary("c2w");
-        System.loadLibrary("HvcOi");
-        System.loadLibrary("HVCW");
-    }
-
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
+        wrapper = new HvcwApiWrapper(API_KEY,APP_ID);
+
         // SDKのバージョン確認
-        Int major = new Int();
-        Int minor = new Int();
-        Int release = new Int();
-        HvcwApi.getVersion(major, minor, release);
 
         TextView tv = (TextView)findViewById(R.id.textView6);
-        tv.setText("HVC SDK Ver." + major.getIntValue() + "." + minor.getIntValue() + "." + release.getIntValue());
-
-        if (api != null) {
-            api.deleteHandle();
-        }
-
-        // ハンドル生成
-        api = HvcwApi.createHandle();
-        if (api == null) {
-            Log.d(TAG, "createHandle() failed.");
-            finish();
-        }
+        tv.setText("HVC SDK Ver." + wrapper.getVersion());
 
         // UIの設定
         initUIControl();
@@ -165,18 +135,9 @@ public class MainActivity extends AppCompatActivity {
         // レシーバーの解除
         unregisterReceiver(receiver);
 
-        if (api != null) {
+        if (wrapper != null) {
             // カメラに接続済みの場合は切断する
-            if (isConnected) {
-                Log.d(TAG, "disconnect()");
-                api.disconnect();
-                isConnected = false;
-            }
-
-            // ハンドル破棄
-            Log.d(TAG, "deleteHandle()");
-            api.deleteHandle();
-            api = null;
+            wrapper.disconnect();
         }
         super.onDestroy();
     }
@@ -539,50 +500,54 @@ public class MainActivity extends AppCompatActivity {
         final String fileName = getApplicationContext().getFilesDir() + "/network_setting.pcm";
 
         // カメラを登録するためのネットワーク設定音声ファイルを作成
-        int ret = api.generateDataSoundFile(fileName, ssid, password, accessToken);
-        if (ret == ErrorCodes.HVCW_SUCCESS) {
-            // 作成出来たら再生
-            new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    Log.d(TAG, "play:" + fileName);
-                    File networkSettingFile = new File(fileName);
-                    if (networkSettingFile == null) {
-                        return;
+        wrapper.generateDataSoundFile(fileName, ssid, password,
+                accessToken, new HvcwApiWrapper.GenerateDataSoundFileListener() {
+                    @Override
+                    public void onResult(final String fileName, final String ssid, String password, String accessToken) {
+                        new Thread(new Runnable() {
+                            @Override
+                            public void run() {
+                                Log.d(TAG, "play:" + fileName);
+                                File networkSettingFile = new File(fileName);
+                                if (networkSettingFile == null) {
+                                    return;
+                                }
+
+                                byte[] byteData = new byte[(int) networkSettingFile.length()];
+                                FileInputStream fis;
+                                try {
+                                    fis = new FileInputStream(networkSettingFile);
+                                    fis.read(byteData);
+                                    fis.close();
+                                } catch (FileNotFoundException e) {
+                                    e.printStackTrace();
+                                    return;
+                                } catch (IOException e) {
+                                    e.printStackTrace();
+                                    return;
+                                }
+
+                                int audioBuffSize = AudioTrack.getMinBufferSize(
+                                        8000, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
+
+                                AudioTrack audio = new AudioTrack(AudioManager.STREAM_MUSIC,
+                                        8000,
+                                        AudioFormat.CHANNEL_OUT_MONO,
+                                        AudioFormat.ENCODING_PCM_16BIT,
+                                        audioBuffSize,
+                                        AudioTrack.MODE_STREAM);
+                                audio.play();
+                                audio.write(byteData, 0, byteData.length);
+                            }
+                        }).start();
                     }
 
-                    byte[] byteData = new byte[(int) networkSettingFile.length()];
-                    FileInputStream fis;
-                    try {
-                        fis = new FileInputStream(networkSettingFile);
-                        fis.read(byteData);
-                        fis.close();
-                    } catch (FileNotFoundException e) {
-                        e.printStackTrace();
-                        return;
-                    } catch (IOException e) {
-                        e.printStackTrace();
-                        return;
+                    @Override
+                    public void onError(String fileName, String ssid, String password, String accessToken,
+                                        HvcwApiWrapper.ErrorStatus error) {
+                        addLog(String.format("errorCode=%d,description=\"%s\"", error.getErrorCode(), error.getDescription()));
                     }
-
-                    int audioBuffSize = AudioTrack.getMinBufferSize(
-                            8000, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
-
-                    AudioTrack audio = new AudioTrack(AudioManager.STREAM_MUSIC,
-                            8000,
-                            AudioFormat.CHANNEL_OUT_MONO,
-                            AudioFormat.ENCODING_PCM_16BIT,
-                            audioBuffSize,
-                            AudioTrack.MODE_STREAM);
-                    audio.play();
-                    audio.write(byteData, 0, byteData.length);
-                }
-            }).start();
-        } else {
-            Log.d(TAG, "generateDataSoundFile() failed.");
-        }
-
-        addLog(String.format("errorCode=%d", ret));
+                });
     }
 
     /**
@@ -658,30 +623,18 @@ public class MainActivity extends AppCompatActivity {
         }
         final String cameraID = cameraList.get(index).getID();
 
-        // APIは通信を行うので非同期で呼び出す
-        new Thread(new Runnable() {
+        wrapper.setCamera(cameraID, accessToken, new HvcwApiWrapper.CameraConnectListener() {
             @Override
-            public void run() {
-                // カメラに接続
-                Log.d(TAG, "connect:" + cameraID);
-                int ret = api.connect(cameraID, accessToken);
-                Int returnStatus = new Int();
-                if (ret == ErrorCodes.HVCW_SUCCESS) {
-                    isConnected = true;
-                    // アプリケーションIDを設定
-                    Log.d(TAG, "setAppID:" + APP_ID);
-                    ret = api.setAppID(APP_ID, returnStatus);
-                }
-
-                final String msg = String.format("errorCode=%d,returnStatus=%#x", ret, returnStatus.getIntValue());
-                handler.post(new Runnable() {
-                    @Override
-                    public void run() {
-                        addLog(msg);
-                    }
-                });
+            public void onConnect(String cameraID) {
             }
-        }).start();
+
+            @Override
+            public void onError(String cameraID, HvcwApiWrapper.ErrorStatus error) {
+                addLog(String.format("errorCode=%d,description=\"%s\"", error.getErrorCode(), error.getDescription()));
+            }
+        });
+
+
     }
 
     /**
@@ -729,77 +682,71 @@ public class MainActivity extends AppCompatActivity {
     private void execute() {
         addLog("execute ->");
 
-        new Thread(new Runnable() {
+        // 顔検出・顔向き推定・年齢推定・性別推定・顔認証をON
+        HvcwApiWrapper.OkaoUseFunction useFunction = wrapper.new OkaoUseFunction(
+                false, false, false, true, true, true, true, false, false, false, true);
+        OkaoResult result = new OkaoResult();
+        Int returnStatus = new Int();
+        // 実行
+
+        wrapper.okaoExecute(useFunction, new HvcwApiWrapper.OkaoExecuteListener() {
             @Override
-            public void run() {
-                // 顔検出・顔向き推定・年齢推定・性別推定・顔認証をON
-                int useFunction[] = {0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1};
-                OkaoResult result = new OkaoResult();
-                Int returnStatus = new Int();
-                // 実行
-                int ret = api.okaoExecute(useFunction, result, returnStatus);
-
+            public void onResult(OkaoResult result) {
                 StringBuilder sb = new StringBuilder();
-                if (ret == ErrorCodes.HVCW_SUCCESS) {
-                    sb.append(String.format("errorCode=%d,returnStatus=%#x\n", ret, returnStatus.getIntValue()));
-                    // 検出数
-                    int count = result.getResultFaces().getCount();
-                    ResultFace[] rf = result.getResultFaces().getResultFace();
-                    sb.append(String.format("faceCount=%d", count));
-                    for (int i = 0; i < count; ++i) {
-                        // 顔検出結果
-                        sb.append(String.format("\nface[%d] x=%d,y=%d,size=%d,confidence=%d", i,
-                                rf[i].getCenter().getX(),
-                                rf[i].getCenter().getY(),
-                                rf[i].getSize(),
-                                rf[i].getConfidence()));
-                        // 顔向き推定結果
-                        ResultDirection rd = rf[i].getDirection();
-                        sb.append(String.format("\nface[%d] leftRight=%d,upDown=%d,roll=%d", i,
-                                rd.getLR(),
-                                rd.getUD(),
-                                rd.getRoll()));
-                        // 年齢推定結果
-                        ResultAeg ra = rf[i].getAge();
-                        sb.append(String.format("\nface[%d] age=%d,confidence=%d", i,
-                                ra.getAge(),
-                                ra.getConfidence()));
-                        // 性別推定結果
-                        ResultGender rg = rf[i].getGender();
-                        sb.append(String.format("\nface[%d] gender=%d,confidence=%d", i,
-                                rg.getGender(),
-                                rg.getConfidence()));
-                        // 顔認証
-                        ResultRecognition rr = rf[i].getRecognition();
-                        String recg;
-                        switch (rr.getUID()) {
-                            case -128:
-                                recg = "not recognized";
-                                break;
-                            case -127:
-                                recg = "album is not registered";
-                                break;
-                            case -1:
-                                recg = String.format("match=×,score=%d", rr.getScore());
-                                break;
-                            default:
-                                recg = String.format("match=○,score=%d", rr.getScore());
-                        }
-                        sb.append(String.format("\nface[%d] %s", i, recg));
+                // 検出数
+                int count = result.getResultFaces().getCount();
+                ResultFace[] rf = result.getResultFaces().getResultFace();
+                sb.append(String.format("faceCount=%d", count));
+                for (int i = 0; i < count; ++i) {
+                    // 顔検出結果
+                    sb.append(String.format("\nface[%d] x=%d,y=%d,size=%d,confidence=%d", i,
+                            rf[i].getCenter().getX(),
+                            rf[i].getCenter().getY(),
+                            rf[i].getSize(),
+                            rf[i].getConfidence()));
+                    // 顔向き推定結果
+                    ResultDirection rd = rf[i].getDirection();
+                    sb.append(String.format("\nface[%d] leftRight=%d,upDown=%d,roll=%d", i,
+                            rd.getLR(),
+                            rd.getUD(),
+                            rd.getRoll()));
+                    // 年齢推定結果
+                    ResultAeg ra = rf[i].getAge();
+                    sb.append(String.format("\nface[%d] age=%d,confidence=%d", i,
+                            ra.getAge(),
+                            ra.getConfidence()));
+                    // 性別推定結果
+                    ResultGender rg = rf[i].getGender();
+                    sb.append(String.format("\nface[%d] gender=%d,confidence=%d", i,
+                            rg.getGender(),
+                            rg.getConfidence()));
+                    // 顔認証
+                    ResultRecognition rr = rf[i].getRecognition();
+                    String recg;
+                    switch (rr.getUID()) {
+                        case -128:
+                            recg = "not recognized";
+                            break;
+                        case -127:
+                            recg = "album is not registered";
+                            break;
+                        case -1:
+                            recg = String.format("match=×,score=%d", rr.getScore());
+                            break;
+                        default:
+                            recg = String.format("match=○,score=%d", rr.getScore());
                     }
-                } else {
-                    sb.append(String.format("errorCode=%d,returnStatus=%#x", ret, returnStatus.getIntValue()));
+                    sb.append(String.format("\nface[%d] %s", i, recg));
                 }
-
-                final String msg = sb.toString();
-                handler.post(new Runnable() {
-                    @Override
-                    public void run() {
-                        addLog(msg);
-                    }
-                });
+                addLog(sb.toString());
             }
-        }).start();
+
+            @Override
+            public void onError(HvcwApiWrapper.ErrorStatus error) {
+                addLog(String.format("errorCode=%d,description=\"%s\"", error.getErrorCode(), error.getDescription()));
+            }
+        });
+
     }
 
     /**
@@ -808,38 +755,26 @@ public class MainActivity extends AppCompatActivity {
     private void registerAlbum() {
         addLog("registerAlbum ->");
 
-        new Thread(new Runnable() {
+        // アルバム登録
+        wrapper.registerAlbum(0, 0, new HvcwApiWrapper.RegisterAlbumListener() { // UserID=0,DataID=0へ登録
             @Override
-            public void run() {
-                ResultDetection rd = new ResultDetection();
-                FileInfo fi = new FileInfo();
-                Int returnStatus = new Int();
-                // アルバム登録
-                int ret = api.albumRegister(0, 0, rd, fi, returnStatus); // UserID=0,DataID=0へ登録
-
+            public void onResult(int userID, int dataID, ResultDetection resultDetection, FileInfo fileInfo) {
                 StringBuilder sb = new StringBuilder();
-                if (ret == ErrorCodes.HVCW_SUCCESS) {
-                    sb.append(String.format("errorCode=%d,returnStatus=%#x\n", ret, returnStatus.getIntValue()));
 
-                    // 顔検出結果
-                    sb.append(String.format("register album x=%d,y=%d,size=%d,confidence=%d",
-                            rd.getCenter().getX(),
-                            rd.getCenter().getY(),
-                            rd.getSize(),
-                            rd.getConfidence()));
-                } else {
-                    sb.append(String.format("errorCode=%d,returnStatus=%#x", ret, returnStatus.getIntValue()));
-                }
-
-                final String msg = sb.toString();
-                handler.post(new Runnable() {
-                    @Override
-                    public void run() {
-                        addLog(msg);
-                    }
-                });
+                // 顔検出結果
+                sb.append(String.format("register album x=%d,y=%d,size=%d,confidence=%d",
+                        resultDetection.getCenter().getX(),
+                        resultDetection.getCenter().getY(),
+                        resultDetection.getSize(),
+                        resultDetection.getConfidence()));
+                addLog(sb.toString());
             }
-        }).start();
+
+            @Override
+            public void onError(int userID, int dataID, HvcwApiWrapper.ErrorStatus error) {
+                addLog(String.format("errorCode=%d,description=\"%s\"", error.getErrorCode(), error.getDescription()));
+            }
+        });
     }
 
     /**
@@ -847,23 +782,33 @@ public class MainActivity extends AppCompatActivity {
      */
     private void deleteAlbum() {
         addLog("deleteAlbum ->");
-
-        new Thread(new Runnable() {
+        // アルバムデータ削除
+        wrapper.deleteAlbum(0, 0, new HvcwApiWrapper.DeleteAlbumListener() { // UserID=0,DataID=0のデータを削除
             @Override
-            public void run() {
-                Int returnStatus = new Int();
-                // アルバムデータ削除
-                int ret = api.albumDeleteData(0, 0, returnStatus); // UserID=0,DataID=0のデータを削除
-
-                final String msg = String.format("errorCode=%d,returnStatus=%#x", ret, returnStatus.getIntValue());
-                handler.post(new Runnable() {
-                    @Override
-                    public void run() {
-                        addLog(msg);
-                    }
-                });
+            public void onResult(int userID, int dataID) {
+                addLog(String.format("delete album UserId=%d,DateID=%d", userID, dataID));
             }
-        }).start();
+
+            @Override
+            public void onError(int userID, int dataID, HvcwApiWrapper.ErrorStatus error) {
+                addLog(String.format("errorCode=%d,description=\"%s\"", error.getErrorCode(), error.getDescription()));
+            }
+        });
+    }
+
+    private void getLastOkaoImage() {
+        addLog("getLastOkaoImage ->");
+        wrapper.getLastOkaoImage(new HvcwApiWrapper.LastOkaoImageListener() {
+            @Override
+            public void onResult(Bitmap bitmap) {
+                addLog(String.format("size:%d", bitmap.getByteCount()));
+            }
+
+            @Override
+            public void onError(HvcwApiWrapper.ErrorStatus error) {
+                addLog(String.format("errorCode=%d,description=\"%s\"", error.getErrorCode(), error.getDescription()));
+            }
+        });
     }
 
     /**
